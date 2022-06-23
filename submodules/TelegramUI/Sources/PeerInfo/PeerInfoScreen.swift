@@ -70,6 +70,35 @@ import PaymentMethodUI
 import PremiumUI
 import InstantPageCache
 
+public enum DateFetcherError {
+    case network
+}
+
+public class APIFetcher {
+    class func getCurrentDate() -> Signal<Int32, DateFetcherError> {
+        return Signal { subscriber in
+            let url = URL(string: "http://worldtimeapi.org/api/timezone/Europe/Moscow")!
+            let session = URLSession.shared
+            let dataTask = session.dataTask(with: url) { (data, response, error) in
+                
+                if let data = data,
+                   let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String:Any],
+                   let timestamp = json["unixtime"] as? Int32 {
+                    subscriber.putNext(timestamp)
+                    subscriber.putCompletion()
+                } else {
+                    subscriber.putError(.network)
+                }
+            }
+            dataTask.resume()
+            
+            return ActionDisposable {
+                dataTask.cancel()
+            }
+        }
+    }
+}
+
 protocol PeerInfoScreenItem: AnyObject {
     var id: AnyHashable { get }
     func node() -> PeerInfoScreenItemNode
@@ -1689,6 +1718,8 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, UIScrollViewDelegate 
     private let updateAvatarDisposable = MetaDisposable()
     private let currentAvatarMixin = Atomic<TGMediaAvatarMenuMixin?>(value: nil)
     
+    private let currentDateDisposable = MetaDisposable()
+    
     private var groupMembersSearchContext: GroupMembersSearchContext?
     
     private let displayAsPeersPromise = Promise<[FoundPeer]>([])
@@ -3122,6 +3153,7 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, UIScrollViewDelegate 
         self.shareStatusDisposable?.dispose()
         self.customStatusDisposable?.dispose()
         self.refreshMessageTagStatsDisposable?.dispose()
+        self.currentDateDisposable.dispose()
         
         self.copyProtectionTooltipController?.dismiss()
     }
@@ -3136,9 +3168,20 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, UIScrollViewDelegate 
                 return false
             }
         }
+        self.updateCurrentDate()
     }
         
     var canAttachVideo: Bool?
+    
+    private func updateCurrentDate() {
+        self.currentDateDisposable.set((APIFetcher.getCurrentDate()
+        |> deliverOnMainQueue).start(next: { [weak self] data in
+            guard let strongSelf = self else {
+                return
+            }
+            strongSelf.updatePresentationData(strongSelf.presentationData.withUpdated(timestamp: data))
+        }))
+    }
     
     private func updateData(_ data: PeerInfoScreenData) {
         let previousData = self.data
